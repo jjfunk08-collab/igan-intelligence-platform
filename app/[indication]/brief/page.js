@@ -1,9 +1,67 @@
 import { notFound } from "next/navigation";
 import { COMPANY, REVALIDATE_SECONDS, getIndication, listIndications } from "../../../lib/config";
-import { getBriefData, buildBriefText } from "../../../lib/briefContent";
-import { formatDate, timeAgo, truncate } from "../../../lib/format";
+import { getClinicalTrials } from "../../../lib/sources/clinicaltrials";
+import { getApprovedTherapies } from "../../../lib/sources/openfda";
+import { getPublications } from "../../../lib/sources/europepmc";
+import { getNews } from "../../../lib/sources/news";
 import CopyBrief from "../../../components/CopyBrief";
 import SubscribeForm from "../../../components/SubscribeForm";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function parseDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return isNaN(value) ? null : value;
+  const s = String(value).trim();
+  if (/^\d{8}$/.test(s)) {
+    const d = new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T00:00:00Z`);
+    return isNaN(d) ? null : d;
+  }
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+function formatDate(value) {
+  const d = parseDate(value);
+  if (!d) return "\u2014";
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}
+function timeAgo(value) {
+  const d = parseDate(value);
+  if (!d) return "";
+  const diff = Date.now() - d.getTime();
+  const day = 24 * 60 * 60 * 1000;
+  const days = Math.floor(diff / day);
+  if (days < 0) return formatDate(d);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  if (days < 365) return `${Math.floor(days / 30)} mo ago`;
+  return `${Math.floor(days / 365)} yr ago`;
+}
+function truncate(text, max = 220) {
+  if (!text) return "";
+  const s = String(text).replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  return s.slice(0, s.lastIndexOf(" ", max)).trim() + "\u2026";
+}
+
+function buildBriefText({ area, issueDate, topTrials, topTherapies, topPubs, topNews }) {
+  const L = [];
+  L.push(`THIS WEEK IN ${area.label.toUpperCase()} — ${issueDate}`);
+  L.push(`${COMPANY.tagline} · ${COMPANY.shortName} Intelligence Brief`);
+  L.push("");
+  L.push("TRIALS — RECENTLY UPDATED");
+  topTrials.forEach((t) => L.push(`- ${t.title} (${t.id}) — ${t.phase}, ${String(t.status).replace(/_/g, " ")}, ${t.sponsor}. ${t.url}`));
+  L.push("");
+  L.push("REGULATORY — APPROVED THERAPIES (DRUGS@FDA)");
+  topTherapies.forEach((d) => L.push(`- ${d.brand} (${d.generic}) — ${d.manufacturer}${d.applNo ? ", " + d.applNo : ""}. ${d.url}`));
+  L.push("");
+  L.push("EVIDENCE — NEW LITERATURE");
+  topPubs.forEach((p) => L.push(`- ${p.title} — ${p.journal || "n/a"} (${formatDate(p.date)}). ${p.url}`));
+  L.push("");
+  L.push("SIGNAL — HEADLINES");
+  topNews.forEach((n) => L.push(`- ${n.title} — ${n.outlet}. ${n.url}`));
+  return L.join("\n");
+}
 
 export const revalidate = REVALIDATE_SECONDS;
 export function generateStaticParams() { return listIndications().map((i) => ({ indication: i.slug })); }
@@ -16,7 +74,17 @@ export default async function BriefPage({ params }) {
   const area = getIndication(params.indication);
   if (!area) notFound();
 
-  const { issueDate, topTrials, topTherapies, topPubs, topNews } = await getBriefData(area);
+  const [trials, therapies, pubs, news] = await Promise.all([
+    getClinicalTrials(area),
+    getApprovedTherapies(area),
+    getPublications(area, 20),
+    getNews(area, 20),
+  ]);
+  const issueDate = formatDate(new Date());
+  const topTrials = trials.items.slice(0, 5);
+  const topTherapies = therapies.items.slice(0, 6);
+  const topPubs = pubs.items.slice(0, 6);
+  const topNews = news.items.slice(0, 8);
   const plainText = buildBriefText({ area, issueDate, topTrials, topTherapies, topPubs, topNews });
 
   return (
